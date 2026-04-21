@@ -6,7 +6,9 @@ const router = useRouter()
 const groupId = ref('')
 
 const joinGroup = async () => {
-  if (!groupId.value.trim()) return
+  if (!groupId.value.trim()) {
+    return
+  }
 
   await router.push({
     path: '/',

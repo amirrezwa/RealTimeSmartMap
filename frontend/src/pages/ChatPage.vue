@@ -127,7 +127,9 @@ const sendMessage = () => {
 }
 
 const sendLocation = () => {
-  if (!userId.value) return
+  if (!userId.value) {
+    return
+  }
 
   navigator.geolocation.getCurrentPosition((pos) => {
     const lat = pos.coords.latitude

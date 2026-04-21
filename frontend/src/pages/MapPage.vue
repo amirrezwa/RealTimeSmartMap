@@ -6,7 +6,6 @@ import 'leaflet/dist/leaflet.css'
 import { io } from 'socket.io-client'
 import axios from 'axios'
 
-// ================= TYPES =================
 type UserLocation = {
   id: number
   lat: number | null
@@ -20,52 +19,38 @@ type Message = {
   time?: string | Date
 }
 
-// ================= SOCKET =================
 const socket = io('http://localhost:3000')
 
-// ================= ROUTE =================
 const route = useRoute()
 const groupId = (route.query.group as string) || 'test123'
 
-// ================= USER =================
 const userId = ref<number | null>(null)
 const username = ref('')
 
-// ================= CHAT =================
 const message = ref('')
 const messages = ref<Message[]>([])
 const messagesRef = ref<HTMLElement | null>(null)
 
-// ================= MAP =================
 let map: L.Map
 const markers: Record<number, L.Marker> = {}
 let myMarker: L.Marker | null = null
 
-// ================= API =================
 const api = axios.create({
   baseURL: 'http://localhost:3000'
 })
 
-// ================= INIT USER =================
 const initUser = async () => {
-  try {
-    const saved = localStorage.getItem('user')
-    if (saved) return JSON.parse(saved)
+  const saved = localStorage.getItem('user')
+  if (saved) return JSON.parse(saved)
 
-    const res = await api.post('/users', {
-      username: 'Guest-' + Math.floor(Math.random() * 1000)
-    })
+  const res = await api.post('/users', {
+    username: 'Guest-' + Math.floor(Math.random() * 1000)
+  })
 
-    localStorage.setItem('user', JSON.stringify(res.data))
-    return res.data
-
-  } catch (err) {
-    console.log('❌ USER CREATE ERROR:', err)
-    return { id: 1, username: 'fallback' } // موقت
-  }
+  localStorage.setItem('user', JSON.stringify(res.data))
+  return res.data
 }
 
-// ================= SCROLL =================
 const scrollToBottom = () => {
   void nextTick(() => {
     if (messagesRef.value) {
@@ -74,7 +59,6 @@ const scrollToBottom = () => {
   })
 }
 
-// ================= ICON =================
 const createIcon = (id: number) => {
   return L.divIcon({
     html: `<div class="avatar-marker">${id}</div>`,
@@ -83,58 +67,78 @@ const createIcon = (id: number) => {
   })
 }
 
-// ================= MOUNT =================
-onMounted(async () => {
-  const user = await initUser()
-  userId.value = user.id
-  username.value = user.username
+const moveMarkerSmooth = (
+  marker: L.Marker,
+  from: [number, number],
+  to: [number, number],
+  duration = 1000
+) => {
+  const start = performance.now()
 
-  // ===== MAP =====
-  map = L.map('map').setView([35.7, 51.4], 13)
+  const animate = (time: number) => {
+    const progress = Math.min((time - start) / duration, 1)
 
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png')
-    .addTo(map)
+    const lat = from[0] + (to[0] - from[0]) * progress
+    const lng = from[1] + (to[1] - from[1]) * progress
 
-  // ===== LOAD USERS =====
+    marker.setLatLng([lat, lng])
+
+    if (progress < 1) requestAnimationFrame(animate)
+  }
+
+  requestAnimationFrame(animate)
+}
+
+const loadUsers = async () => {
   const res = await api.get<UserLocation[]>(`/users?groupId=${groupId}`)
 
   res.data.forEach((u) => {
-    if (u.lat == null || u.lng == null) return
+    if (!u.lat || !u.lng) {
+      return
+    }
+    if (u.id === userId.value) {
+      return
+    }
 
     markers[u.id] = L.marker([u.lat, u.lng], {
       icon: createIcon(u.id)
     }).addTo(map)
   })
+}
 
-  // ===== JOIN GROUP (IMPORTANT FIX) =====
-  socket.emit('joinGroup', {
-    userId: userId.value,
-    groupId
+onMounted(async () => {
+  const user = await initUser()
+  userId.value = user.id
+  username.value = user.username
+
+  map = L.map('map').setView([35.7, 51.4], 13)
+
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png')
+  .addTo(map)
+
+  await loadUsers()
+
+  socket.on('connect', () => {
+    console.log('✅ SOCKET CONNECTED:', socket.id)
+
+    socket.emit('joinGroup', {
+      userId: userId.value,
+      groupId
+    })
   })
 
-  // ===== MESSAGE =====
   socket.on('receiveMessage', (msg: Message) => {
     messages.value.push(msg)
     scrollToBottom()
   })
 
-  socket.on('connect', () => {
-    console.log('✅ SOCKET CONNECTED:', socket.id)
-
-socket.emit('joinGroup', {
-  userId: userId.value,
-  groupId
-})
-})
-
-socket.on('connect_error', (err) => {
-  console.log('❌ SOCKET ERROR:', err.message)
-})
-
-  // ===== LOCATION =====
   socket.on('receiveLocation', (user: UserLocation) => {
-    if (user.lat == null || user.lng == null) return
-    if (user.id === userId.value) return
+    if (!user.lat || !user.lng) {
+      return
+    }
+    if (user.id === userId.value) {
+      return
+    }
 
     const marker = markers[user.id]
 
@@ -143,12 +147,26 @@ socket.on('connect_error', (err) => {
         icon: createIcon(user.id)
       }).addTo(map)
     } else {
-      marker.setLatLng([user.lat, user.lng])
+      const current = marker.getLatLng()
+
+      moveMarkerSmooth(
+        marker,
+        [current.lat, current.lng],
+        [user.lat, user.lng]
+      )
     }
   })
 
-  // ===== MY LOCATION =====
+  let lastSent = 0
+
   navigator.geolocation.watchPosition((pos) => {
+    const now = Date.now()
+    if (now - lastSent < 2000) {
+      return
+    }
+
+    lastSent = now
+
     const lat = pos.coords.latitude
     const lng = pos.coords.longitude
 
@@ -169,19 +187,10 @@ socket.on('connect_error', (err) => {
   })
 })
 
-// ================= SEND MESSAGE =================
 const sendMessage = () => {
-  if (!message.value.trim() || !userId.value) return
-
-  const temp: Message = {
-    userId: userId.value,
-    username: username.value,
-    text: message.value,
-    time: new Date()
+  if (!message.value.trim() || !userId.value) {
+    return
   }
-
-  messages.value.push(temp)
-  scrollToBottom()
 
   socket.emit('sendMessage', {
     userId: userId.value,
@@ -212,9 +221,9 @@ const sendMessage = () => {
       <input
         v-model="message"
         @keyup.enter="sendMessage"
-        placeholder="پیام بنویس..."
+        placeholder="Message..."
       />
-      <button @click="sendMessage">ارسال</button>
+      <button @click="sendMessage">Send</button>
     </div>
   </div>
 </template>
