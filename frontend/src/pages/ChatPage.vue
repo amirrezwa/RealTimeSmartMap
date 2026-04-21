@@ -2,26 +2,60 @@
 import { ref, onMounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { io } from 'socket.io-client'
+import axios from 'axios'
+
+
+type ApiMessage = {
+  id: number
+  text: string | null
+  lat: number | null
+  lng: number | null
+  userId: number
+  createdAt: string
+  user: {
+    id: number
+    username: string
+  }
+}
 
 type Message = {
   userId: number
   username: string
-  text: string
+  text?: string | null
+  lat?: number | null
+  lng?: number | null
   time: string | Date
 }
 
-const socket = io('http://localhost:3000/api')
+const socket = io('http://localhost:3000')
 const route = useRoute()
-
 const groupId = route.query.group as string
 
-const userId = Math.floor(Math.random() * 1000)
-const username = `User-${userId}`
+const userId = ref<number | null>(null)
+const username = ref('')
 
 const message = ref('')
 const messages = ref<Message[]>([])
-const onlineUsers = ref<number[]>([])
 const messagesRef = ref<HTMLElement | null>(null)
+
+const initUser = async () => {
+  const saved = localStorage.getItem('user')
+  if (saved) return JSON.parse(saved)
+
+  const res = await api.post('/users', {
+  username: 'Guest-' + Math.floor(Math.random() * 1000)
+})
+
+  localStorage.setItem('user', JSON.stringify(res.data))
+  return res.data
+}
+
+const api = axios.create({
+  baseURL: 'http://localhost:3000',
+  headers: {
+    'Content-Type': 'application/json'
+  }
+})
 
 const scrollToBottom = () => {
   void nextTick(() => {
@@ -31,31 +65,51 @@ const scrollToBottom = () => {
   })
 }
 
-onMounted(() => {
-  socket.emit('joinGroup', { userId, groupId })
+onMounted(async () => {
+  const user = await initUser()
+  userId.value = user.id
+  username.value = user.username
+
+  socket.emit('joinGroup', {
+    userId: user.id,
+    groupId
+  })
+
+  const res = await api.get(`/messages?groupId=${groupId}`)
+
+  messages.value = res.data.map((m: ApiMessage) => ({
+    userId: m.userId,
+    username: m.user.username,
+    text: m.text,
+    lat: m.lat,
+    lng: m.lng,
+    time: m.createdAt
+  }))
 
   socket.on('receiveMessage', (msg: Message) => {
-    if (msg.userId === userId) {
+    messages.value.push(msg)
+    scrollToBottom()
+  })
+})
+
+  scrollToBottom()
+
+  socket.on('receiveMessage', (msg: Message) => {
+    if (msg.userId === userId.value) {
       return
     }
-
     messages.value.push(msg)
     scrollToBottom()
   })
 
-  socket.on('onlineUsers', (users: number[]) => {
-    onlineUsers.value = users
-  })
-})
-
 const sendMessage = () => {
-  if (!message.value.trim()) {
+  if (!message.value.trim() || !userId.value) {
     return
   }
 
   const tempMsg: Message = {
-    userId,
-    username,
+    userId: userId.value,
+    username: username.value,
     text: message.value,
     time: new Date()
   }
@@ -64,12 +118,43 @@ const sendMessage = () => {
   scrollToBottom()
 
   socket.emit('sendMessage', {
-    userId,
+    userId: userId.value,
     text: message.value,
     groupId
   })
 
   message.value = ''
+}
+
+const sendLocation = () => {
+  if (!userId.value) return
+
+  navigator.geolocation.getCurrentPosition((pos) => {
+    const lat = pos.coords.latitude
+    const lng = pos.coords.longitude
+
+    const tempMsg: Message = {
+      userId: userId.value!,
+      username: username.value,
+      lat,
+      lng,
+      time: new Date()
+    }
+
+    messages.value.push(tempMsg)
+    scrollToBottom()
+
+    socket.emit('sendMessage', {
+      userId,
+      lat,
+      lng,
+      groupId
+    })
+  })
+}
+
+const openMap = (lat: number, lng: number) => {
+  window.open(`https://www.google.com/maps?q=${lat},${lng}`, '_blank')
 }
 
 const formatTime = (time: string | Date) => {
@@ -81,48 +166,30 @@ const formatTime = (time: string | Date) => {
 <template>
   <div class="chat">
 
-    <div class="online-bar">
-      🟢 Online: {{ onlineUsers.length }}
-
-      <span
-        v-for="id in onlineUsers"
-        :key="id"
-        class="user-dot"
-      >
-        {{ id }}
-      </span>
-    </div>
-
     <div class="messages" ref="messagesRef">
       <div
         v-for="(m, i) in messages"
         :key="i"
-        class="bubble-wrapper"
+        class="bubble"
         :class="{ me: m.userId === userId }"
       >
-        <div class="bubble">
-          <div class="username" v-if="m.userId !== userId">
-            {{ m.username }}
-          </div>
+        <div v-if="m.text">{{ m.text }}</div>
 
-          <div class="text">
-            {{ m.text }}
-          </div>
-
-          <div class="time">
-            {{ formatTime(m.time) }}
-          </div>
+        <div v-if="m.lat && m.lng" class="location">
+          📍 Location
+          <button @click="openMap(m.lat, m.lng)">
+            View
+          </button>
         </div>
+
+        <div class="time">{{ formatTime(m.time) }}</div>
       </div>
     </div>
 
     <div class="input">
-      <input
-        v-model="message"
-        placeholder="type message..."
-        @keyup.enter="sendMessage"
-      />
+      <input v-model="message" @keyup.enter="sendMessage" placeholder="Type a message..." />
       <button @click="sendMessage">Send</button>
+      <button @click="sendLocation">📍</button>
     </div>
 
   </div>
@@ -131,96 +198,34 @@ const formatTime = (time: string | Date) => {
 <style>
 .chat {
   padding: 20px;
+  height: 100vh;
   display: flex;
   flex-direction: column;
-  height: 100vh;
-}
-
-.online-bar {
-  padding: 8px;
-  font-size: 14px;
-  background: #f3f4f6;
-  border-radius: 8px;
-  margin-bottom: 10px;
-}
-
-.user-dot {
-  display: inline-block;
-  margin-left: 6px;
-  padding: 4px 8px;
-  background: #22c55e;
-  color: white;
-  border-radius: 999px;
-  font-size: 12px;
 }
 
 .messages {
   flex: 1;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding-bottom: 10px;
-}
-
-.bubble-wrapper {
-  display: flex;
-}
-
-.bubble-wrapper.me {
-  justify-content: flex-end;
 }
 
 .bubble {
-  max-width: 70%;
-  padding: 10px 12px;
-  border-radius: 14px;
   background: #eee;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  margin: 5px;
+  padding: 10px;
+  border-radius: 10px;
 }
 
-.bubble-wrapper.me .bubble {
+.me {
   background: #4f46e5;
   color: white;
 }
 
-.username {
-  font-size: 12px;
-  font-weight: bold;
-  opacity: 0.7;
-}
-
-.text {
-  font-size: 14px;
-}
-
-.time {
-  font-size: 10px;
-  opacity: 0.6;
-  align-self: flex-end;
+.location button {
+  margin-top: 5px;
 }
 
 .input {
   display: flex;
   gap: 10px;
-  margin-top: 10px;
-}
-
-input {
-  flex: 1;
-  padding: 10px;
-  border-radius: 8px;
-  border: 1px solid #ccc;
-}
-
-button {
-  padding: 10px 16px;
-  background: #4f46e5;
-  color: white;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
 }
 </style>

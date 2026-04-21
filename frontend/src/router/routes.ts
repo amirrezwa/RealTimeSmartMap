@@ -4,12 +4,9 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/',
     component: () => import('layouts/MainLayout.vue'),
-    children: [{ path: '', component: () => import('pages/MapPage.vue') }],
-  },
-
-  {
-    path: '/:catchAll(.*)*',
-    component: () => import('pages/ErrorNotFound.vue'),
+    children: [
+      { path: '', component: () => import('pages/MapPage.vue') }
+    ],
   },
 
   {
@@ -20,7 +17,12 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/group',
     component: () => import('pages/GroupPage.vue')
-  }
+  },
+
+  {
+    path: '/:catchAll(.*)*',
+    component: () => import('pages/ErrorNotFound.vue'),
+  },
 ];
 
 export default routes;

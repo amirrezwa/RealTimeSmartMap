@@ -9,7 +9,7 @@ const joinGroup = async () => {
   if (!groupId.value.trim()) return
 
   await router.push({
-    path: '/map',
+    path: '/',
     query: { group: groupId.value }
   })
 }
